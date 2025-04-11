@@ -3,6 +3,7 @@ import base64
 import os
 import platform
 
+
 def save_and_play(video_b64, filename):
     video_bytes = base64.b64decode(video_b64.encode("utf-8"))
     with open(filename, "wb") as f:
@@ -16,8 +17,11 @@ def save_and_play(video_b64, filename):
     elif system == "Linux":
         os.system(f"xdg-open '{filename}'")
 
+
 def main():
-    video_server = Pyro4.Proxy("PYRO:video.example@172.17.42.153:9090")
+    ns = Pyro4.locateNS(host="172.17.42.119", port=9091)
+    uri = ns.lookup("video.example")
+    video_server = Pyro4.Proxy(uri)
 
     print("[CLIENT] Getting video list...")
     videos = video_server.list_videos()
@@ -26,7 +30,7 @@ def main():
         return
 
     for i, name in enumerate(videos):
-        print(f"{i+1}. {name}")
+        print(f"{i + 1}. {name}")
 
     choice = int(input("Select a video: ")) - 1
     selected_video = videos[choice]
@@ -40,6 +44,7 @@ def main():
         print(f"Saved and played: {filename}")
     else:
         print("Failed to receive video.")
+
 
 if __name__ == "__main__":
     main()
