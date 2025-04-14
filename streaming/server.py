@@ -1,53 +1,36 @@
 import os
-import base64
 import Pyro4
-from moviepy.editor import VideoFileClip
 
+Pyro4.config.SERIALIZER = "serpent"
+Pyro4.config.SERIALIZERS_ACCEPTED.add("serpent")
 
 @Pyro4.expose
 class VideoServer:
     def __init__(self, video_folder="pyro_vids"):
         self.video_folder = video_folder
-        self.last_video_sent = None
 
     def list_videos(self):
-        try:
-            return [f for f in os.listdir(self.video_folder) if f.endswith(".mp4")]
-        except Exception as e:
-            return [f"Error: {e}"]
+        return [f for f in os.listdir(self.video_folder) if f.endswith(".mp4")]
 
-    def get_processed_video(self, video_name):
+    def get_video_size(self, video_name):
+        path = os.path.join(self.video_folder, video_name)
+        return os.path.getsize(path)
+
+    def get_entire_video(self, video_name):
         path = os.path.join(self.video_folder, video_name)
         if not os.path.isfile(path):
-            return None
+            raise FileNotFoundError(f"{video_name} not found.")
+        with open(path, "rb") as f:
+            print(f"[SERVER] Sending entire video: {video_name}")
+            return f.read()
 
-        try:
-            clip = VideoFileClip(path).subclip(0, 5)
-            output_path = "processed_video.mp4"
-            clip.write_videofile(output_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
-
-            with open(output_path, "rb") as f:
-                video_bytes = f.read()
-                video_b64 = base64.b64encode(video_bytes).decode("utf-8")
-                self.last_video_sent = video_name
-                return video_b64
-        except Exception as e:
-            print(f"[SERVER ERROR] {e}")
-            return None
-
-    def get_last_video_name(self):
-        return self.last_video_sent
-
-def start_pyro_server(ip="172.17.42.153"):
+def start_pyro_server(ip="127.0.0.1"):
     daemon = Pyro4.Daemon(host=ip)
-    ns = Pyro4.locateNS()
-    video_server = VideoServer()
-    uri = daemon.register(video_server)
-    ns.register("video.example", uri)
-
-    print(f"[PYRO SERVER] Running at IP: {ip}")
-    print(f"[PYRO SERVER] Registered as: {uri}")
+    ns = Pyro4.locateNS(host=ip, port=9091)
+    uri = daemon.register(VideoServer())
+    ns.register("video.nostream", uri)
+    print(f"[SERVER] Pyro Video Server running at {ip}")
     daemon.requestLoop()
 
 if __name__ == "__main__":
-    start_pyro_server("172.17.42.153")
+    start_pyro_server()
