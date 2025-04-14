@@ -2,33 +2,48 @@ import os
 import Pyro4
 import tempfile
 import base64
+import subprocess
+import threading
 import time
+from tqdm import tqdm
 
-CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB
+CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
+START_PLAY_AFTER = 20 * 1024 * 1024  # 20MB
+FFPLAY_PATH = r"C:\ffmpeg\bin\ffplay.exe"
 
 Pyro4.config.SERIALIZER = "serpent"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("serpent")
 
-def download_in_chunks(proxy, video_name, total_size):
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    print(f"[CLIENT] Saving video to: {temp_file.name}")
-
+def download_chunks_streaming(proxy, video_name, total_size, temp_path, trigger_play_event):
     offset = 0
-    with open(temp_file.name, "wb") as f:
+    with open(temp_path, "wb") as f, tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
         while offset < total_size:
-            chunk = proxy.get_video_chunk(video_name, offset, CHUNK_SIZE)
+            try:
+                chunk = proxy.get_video_chunk(video_name, offset, CHUNK_SIZE)
+                if chunk.get("encoding") != "base64":
+                    raise ValueError(f"Unknown encoding: {chunk.get('encoding')}")
+                data = base64.b64decode(chunk["data"])
+                f.write(data)
+                f.flush()
 
-            if chunk.get("encoding") != "base64":
-                raise ValueError(f"Unknown encoding: {chunk.get('encoding')}")
+                offset += chunk["size"]
+                pbar.update(chunk["size"])
 
-            data = base64.b64decode(chunk["data"])
-            f.write(data)
+                # Cuando se hayan descargado 20MB, disparamos la reproducción
+                if offset >= START_PLAY_AFTER and not trigger_play_event.is_set():
+                    trigger_play_event.set()
 
-            offset += chunk["size"]
-            percent = (offset / total_size) * 100
-            print(f"[CLIENT] Downloaded: {offset:,}/{total_size:,} bytes ({percent:.2f}%)")
+            except Exception as e:
+                print(f"[CLIENT ERROR] Failed to download chunk at offset {offset}: {e}")
+                break
 
-    return temp_file.name
+    print("\n[CLIENT] Finished downloading.")
+
+def play_with_ffplay(temp_path, trigger_play_event):
+    print("[CLIENT] Waiting for 20MB before starting playback...")
+    trigger_play_event.wait()  # Espera hasta que se hayan descargado 20MB
+    print("[CLIENT] Starting playback...")
+    subprocess.run([FFPLAY_PATH, "-autoexit", "-loglevel", "quiet", temp_path])
 
 def main():
     try:
@@ -59,13 +74,26 @@ def main():
     size = proxy.get_video_size(video_name)
     print(f"[CLIENT] Video size: {size:,} bytes")
 
-    local_path = download_in_chunks(proxy, video_name, size)
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    temp_path = temp_file.name
+    temp_file.close()
 
-    print("[CLIENT] Attempting to play...")
+    trigger_play_event = threading.Event()
+
+    # Hilo que espera 20MB antes de iniciar ffplay
+    player_thread = threading.Thread(target=play_with_ffplay, args=(temp_path, trigger_play_event))
+    player_thread.start()
+
+    # Hilo principal descarga por chunks
+    download_chunks_streaming(proxy, video_name, size, temp_path, trigger_play_event)
+
+    player_thread.join()
+
+    print("[CLIENT] Cleaning up...")
     try:
-        os.startfile(local_path)  # Windows only
+        os.remove(temp_path)
     except Exception as e:
-        print(f"[CLIENT ERROR] Failed to play video: {e}")
+        print(f"[CLIENT WARNING] Could not remove temp file: {e}")
 
 if __name__ == "__main__":
     main()
