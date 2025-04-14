@@ -1,4 +1,5 @@
 import os
+import base64
 import Pyro4
 
 Pyro4.config.SERIALIZER = "serpent"
@@ -16,13 +17,21 @@ class VideoServer:
         path = os.path.join(self.video_folder, video_name)
         return os.path.getsize(path)
 
-    def get_entire_video(self, video_name):
+    def get_video_chunk(self, video_name, offset, chunk_size):
         path = os.path.join(self.video_folder, video_name)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"{video_name} not found.")
+
         with open(path, "rb") as f:
-            print(f"[SERVER] Sending entire video: {video_name}")
-            return f.read()
+            f.seek(offset)
+            data = f.read(chunk_size)
+            encoded = base64.b64encode(data).decode("utf-8")
+            return {
+                "data": encoded,
+                "encoding": "base64",
+                "size": len(data),
+                "offset": offset
+            }
 
 def start_pyro_server(ip="127.0.0.1"):
     daemon = Pyro4.Daemon(host=ip)

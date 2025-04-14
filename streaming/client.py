@@ -2,42 +2,33 @@ import os
 import Pyro4
 import tempfile
 import base64
+import time
 
-# Configuración Pyro4
+CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB
+
 Pyro4.config.SERIALIZER = "serpent"
 Pyro4.config.SERIALIZERS_ACCEPTED.add("serpent")
 
-def download_and_play(proxy, video_name):
-    try:
-        raw_data = proxy.get_entire_video(video_name)
-
-        # 🔍 Mostrar información de depuración
-        print(f"[DEBUG] Type of raw_data: {type(raw_data)}")
-        print(f"[DEBUG] Keys: {list(raw_data.keys())}")
-
-        if isinstance(raw_data, dict) and "data" in raw_data and "encoding" in raw_data:
-            if raw_data["encoding"] == "base64":
-                data = base64.b64decode(raw_data["data"])
-            else:
-                raise ValueError(f"[CLIENT ERROR] Unknown encoding: {raw_data['encoding']}")
-        else:
-            raise TypeError(f"[CLIENT ERROR] Unexpected format: {type(raw_data)}")
-
-    except Exception as e:
-        print(f"[CLIENT ERROR] Failed to download: {e}")
-        return
-
+def download_in_chunks(proxy, video_name, total_size):
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    print(f"[CLIENT] Saving video to: {temp_file.name}")
+
+    offset = 0
     with open(temp_file.name, "wb") as f:
-        f.write(data)
+        while offset < total_size:
+            chunk = proxy.get_video_chunk(video_name, offset, CHUNK_SIZE)
 
-    print(f"[CLIENT] Video saved to: {temp_file.name}")
-    print("[CLIENT] Attempting to play...")
+            if chunk.get("encoding") != "base64":
+                raise ValueError(f"Unknown encoding: {chunk.get('encoding')}")
 
-    try:
-        os.startfile(temp_file.name)  # Windows
-    except Exception as e:
-        print(f"[CLIENT ERROR] Failed to play video: {e}")
+            data = base64.b64decode(chunk["data"])
+            f.write(data)
+
+            offset += chunk["size"]
+            percent = (offset / total_size) * 100
+            print(f"[CLIENT] Downloaded: {offset:,}/{total_size:,} bytes ({percent:.2f}%)")
+
+    return temp_file.name
 
 def main():
     try:
@@ -67,7 +58,14 @@ def main():
 
     size = proxy.get_video_size(video_name)
     print(f"[CLIENT] Video size: {size:,} bytes")
-    download_and_play(proxy, video_name)
+
+    local_path = download_in_chunks(proxy, video_name, size)
+
+    print("[CLIENT] Attempting to play...")
+    try:
+        os.startfile(local_path)  # Windows only
+    except Exception as e:
+        print(f"[CLIENT ERROR] Failed to play video: {e}")
 
 if __name__ == "__main__":
     main()
