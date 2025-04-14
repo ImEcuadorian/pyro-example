@@ -4,7 +4,7 @@ import tempfile
 import base64
 import subprocess
 import threading
-import time
+import socket
 from tqdm import tqdm
 
 CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
@@ -29,19 +29,16 @@ def download_chunks_streaming(proxy, video_name, total_size, temp_path, trigger_
                 offset += chunk["size"]
                 pbar.update(chunk["size"])
 
-                # Cuando se hayan descargado 20MB, disparamos la reproducción
                 if offset >= START_PLAY_AFTER and not trigger_play_event.is_set():
                     trigger_play_event.set()
-
             except Exception as e:
                 print(f"[CLIENT ERROR] Failed to download chunk at offset {offset}: {e}")
                 break
-
     print("\n[CLIENT] Finished downloading.")
 
 def play_with_ffplay(temp_path, trigger_play_event):
     print("[CLIENT] Waiting for 20MB before starting playback...")
-    trigger_play_event.wait()  # Espera hasta que se hayan descargado 20MB
+    trigger_play_event.wait()
     print("[CLIENT] Starting playback...")
     subprocess.run([FFPLAY_PATH, "-autoexit", "-loglevel", "quiet", temp_path])
 
@@ -54,6 +51,10 @@ def main():
     except Exception as e:
         print(f"[CLIENT ERROR] Connection failed: {e}")
         return
+
+    # Generar un ID de cliente único
+    client_id = f"{socket.gethostname()}-{os.getpid()}"
+    proxy.register_client(client_id)
 
     videos = proxy.list_videos()
     if not videos:
@@ -69,6 +70,7 @@ def main():
         video_name = videos[idx]
     except Exception:
         print("Invalid selection.")
+        proxy.unregister_client(client_id)
         return
 
     size = proxy.get_video_size(video_name)
@@ -80,11 +82,9 @@ def main():
 
     trigger_play_event = threading.Event()
 
-    # Hilo que espera 20MB antes de iniciar ffplay
     player_thread = threading.Thread(target=play_with_ffplay, args=(temp_path, trigger_play_event))
     player_thread.start()
 
-    # Hilo principal descarga por chunks
     download_chunks_streaming(proxy, video_name, size, temp_path, trigger_play_event)
 
     player_thread.join()
@@ -94,6 +94,8 @@ def main():
         os.remove(temp_path)
     except Exception as e:
         print(f"[CLIENT WARNING] Could not remove temp file: {e}")
+
+    proxy.unregister_client(client_id)
 
 if __name__ == "__main__":
     main()
